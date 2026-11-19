@@ -1,7 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
-#import <UIKit/UIKit.h>
+#import <objc/message.h>
 
 // --- 1. AVAudioSession Hooks ---
 static BOOL (*orig_setCategory)(id, SEL, AVAudioSessionCategory, NSError **);
@@ -68,7 +68,7 @@ static void hook_setAudioTapProcessor(id self, SEL _cmd, void *tap) {
 
 __attribute__((constructor))
 static void initAudioFix(void) {
-    // 1. Хукаем аудиосессию
+    // 1. Хукаем сессию звука
     Class audioSessionCls = [AVAudioSession class];
     if (audioSessionCls) {
         Method m1 = class_getInstanceMethod(audioSessionCls, @selector(setCategory:error:));
@@ -113,27 +113,51 @@ static void initAudioFix(void) {
         }
     }
 
-    // 4. Всплывающее уведомление для визуального подтверждения
+    // 4. Всплывающее окно через динамический Runtime (без жесткой привязки к UIKit при сборке)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIWindow *window = nil;
-        for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]]) {
-                for (UIWindow *w in scene.windows) {
-                    if (w.isKeyWindow) { window = w; break; }
+        Class uiAppCls = NSClassFromString(@"UIApplication");
+        Class alertCls = NSClassFromString(@"UIAlertController");
+        Class actionCls = NSClassFromString(@"UIAlertAction");
+        if (!uiAppCls || !alertCls || !actionCls) return;
+
+        id app = ((id (*)(id, SEL))objc_msgSend)(uiAppCls, sel_registerName("sharedApplication"));
+        if (!app) return;
+
+        id window = ((id (*)(id, SEL))objc_msgSend)(app, sel_registerName("keyWindow"));
+        if (!window) {
+            id scenes = ((id (*)(id, SEL))objc_msgSend)(app, sel_registerName("connectedScenes"));
+            for (id scene in scenes) {
+                id windows = ((id (*)(id, SEL))objc_msgSend)(scene, sel_registerName("windows"));
+                for (id w in windows) {
+                    BOOL isKey = ((BOOL (*)(id, SEL))objc_msgSend)(w, sel_registerName("isKeyWindow"));
+                    if (isKey) { window = w; break; }
                 }
+                if (window) break;
             }
         }
-        if (!window) window = [UIApplication sharedApplication].keyWindow;
-        UIViewController *root = window.rootViewController;
-        while (root.presentedViewController) {
-            root = root.presentedViewController;
+        if (!window) return;
+
+        id root = ((id (*)(id, SEL))objc_msgSend)(window, sel_registerName("rootViewController"));
+        while (root) {
+            id presented = ((id (*)(id, SEL))objc_msgSend)(root, sel_registerName("presentedViewController"));
+            if (!presented) break;
+            root = presented;
         }
-        if (root) {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"AudioFix" 
-                                                                           message:@"Патч успешно применён!\nКривой эквалайзер обезврежен, звук в наушниках разблокирован." 
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"Отлично" style:UIAlertActionStyleDefault handler:nil]];
-            [root presentViewController:alert animated:YES completion:nil];
-        }
+        if (!root) return;
+
+        id alert = ((id (*)(id, SEL, id, id, NSInteger))objc_msgSend)(alertCls, 
+            sel_registerName("alertControllerWithTitle:message:preferredStyle:"), 
+            @"AudioFix", 
+            @"Патч успешно применён!\nКривой эквалайзер обезврежен, звук в наушниках разблокирован.", 
+            1);
+
+        id action = ((id (*)(id, SEL, id, NSInteger, id))objc_msgSend)(actionCls, 
+            sel_registerName("actionWithTitle:style:handler:"), 
+            @"Отлично", 
+            0, 
+            nil);
+
+        ((void (*)(id, SEL, id))objc_msgSend)(alert, sel_registerName("addAction:"), action);
+        ((void (*)(id, SEL, id, BOOL, id))objc_msgSend)(root, sel_registerName("presentViewController:animated:completion:"), alert, YES, nil);
     });
 }
