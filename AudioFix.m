@@ -8,17 +8,21 @@ static BOOL (*orig_setCategoryWithOptions)(id, SEL, AVAudioSessionCategory, AVAu
 static BOOL (*orig_setCategoryModeOptions)(id, SEL, AVAudioSessionCategory, AVAudioSessionMode, AVAudioSessionCategoryOptions, NSError **);
 static BOOL (*orig_setCategoryModeRouteSharingPolicyOptions)(id, SEL, AVAudioSessionCategory, AVAudioSessionMode, AVAudioSessionRouteSharingPolicy, AVAudioSessionCategoryOptions, NSError **);
 static BOOL (*orig_setMode)(id, SEL, AVAudioSessionMode, NSError **);
-static BOOL (*orig_overrideOutputAudioPort)(id, SEL, AVAudioSessionPortOverride, NSError **);
 
-// Принудительно превращаем паразитный PlayAndRecord в чистый Playback (как в YouTube)
-static AVAudioSessionCategory cleanCategory(AVAudioSessionCategory category) {
+static AVAudioSessionCategoryOptions fixOptions(AVAudioSessionCategory category, AVAudioSessionCategoryOptions options) {
     if ([category isEqualToString:AVAudioSessionCategoryPlayAndRecord]) {
-        return AVAudioSessionCategoryPlayback;
+        // Разрешаем качественное стерео A2DP (для Logitech G435)
+        options |= AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+        // Отключаем телефонный режим HFP (с микрофоном), который крашил звук на G435
+        options &= ~AVAudioSessionCategoryOptionAllowBluetooth;
+        // Обязательно держим динамик телефона активным при отключении наушников
+        options |= AVAudioSessionCategoryOptionDefaultToSpeaker;
+        options |= AVAudioSessionCategoryOptionAllowAirPlay;
     }
-    return category;
+    return options;
 }
 
-static AVAudioSessionMode cleanMode(AVAudioSessionMode mode) {
+static AVAudioSessionMode fixMode(AVAudioSessionMode mode) {
     if ([mode isEqualToString:AVAudioSessionModeVoiceChat] ||
         [mode isEqualToString:AVAudioSessionModeVideoChat] ||
         [mode isEqualToString:AVAudioSessionModeVoicePrompt]) {
@@ -27,68 +31,40 @@ static AVAudioSessionMode cleanMode(AVAudioSessionMode mode) {
     return mode;
 }
 
-static AVAudioSessionCategoryOptions cleanOptions(AVAudioSessionCategory category, AVAudioSessionCategoryOptions options) {
-    // Убираем флаги микрофона, оставляем чистый AirPlay для беспроводного звука
-    options &= ~AVAudioSessionCategoryOptionAllowBluetooth;
-    options &= ~AVAudioSessionCategoryOptionAllowBluetoothA2DP;
-    options &= ~AVAudioSessionCategoryOptionDefaultToSpeaker;
-    options |= AVAudioSessionCategoryOptionAllowAirPlay;
-    return options;
-}
-
 static BOOL hook_setCategory(id self, SEL _cmd, AVAudioSessionCategory category, NSError **outError) {
-    AVAudioSessionCategory fixedCat = cleanCategory(category);
-    if (orig_setCategoryWithOptions) {
-        return orig_setCategoryWithOptions(self, @selector(setCategory:withOptions:error:), fixedCat, cleanOptions(fixedCat, 0), outError);
+    if ([category isEqualToString:AVAudioSessionCategoryPlayAndRecord] && orig_setCategoryWithOptions) {
+        return orig_setCategoryWithOptions(self, @selector(setCategory:withOptions:error:), category, fixOptions(category, 0), outError);
     }
     if (orig_setCategory) {
-        return orig_setCategory(self, _cmd, fixedCat, outError);
+        return orig_setCategory(self, _cmd, category, outError);
     }
     return YES;
 }
 
 static BOOL hook_setCategoryWithOptions(id self, SEL _cmd, AVAudioSessionCategory category, AVAudioSessionCategoryOptions options, NSError **outError) {
-    AVAudioSessionCategory fixedCat = cleanCategory(category);
-    AVAudioSessionCategoryOptions fixedOpts = cleanOptions(fixedCat, options);
     if (orig_setCategoryWithOptions) {
-        return orig_setCategoryWithOptions(self, _cmd, fixedCat, fixedOpts, outError);
+        return orig_setCategoryWithOptions(self, _cmd, category, fixOptions(category, options), outError);
     }
     return YES;
 }
 
 static BOOL hook_setCategoryModeOptions(id self, SEL _cmd, AVAudioSessionCategory category, AVAudioSessionMode mode, AVAudioSessionCategoryOptions options, NSError **outError) {
-    AVAudioSessionCategory fixedCat = cleanCategory(category);
-    AVAudioSessionMode fixedMode = cleanMode(mode);
-    AVAudioSessionCategoryOptions fixedOpts = cleanOptions(fixedCat, options);
     if (orig_setCategoryModeOptions) {
-        return orig_setCategoryModeOptions(self, _cmd, fixedCat, fixedMode, fixedOpts, outError);
+        return orig_setCategoryModeOptions(self, _cmd, category, fixMode(mode), fixOptions(category, options), outError);
     }
     return YES;
 }
 
 static BOOL hook_setCategoryModeRouteSharingPolicyOptions(id self, SEL _cmd, AVAudioSessionCategory category, AVAudioSessionMode mode, AVAudioSessionRouteSharingPolicy policy, AVAudioSessionCategoryOptions options, NSError **outError) {
-    AVAudioSessionCategory fixedCat = cleanCategory(category);
-    AVAudioSessionMode fixedMode = cleanMode(mode);
-    AVAudioSessionCategoryOptions fixedOpts = cleanOptions(fixedCat, options);
     if (orig_setCategoryModeRouteSharingPolicyOptions) {
-        return orig_setCategoryModeRouteSharingPolicyOptions(self, _cmd, fixedCat, fixedMode, policy, fixedOpts, outError);
+        return orig_setCategoryModeRouteSharingPolicyOptions(self, _cmd, category, fixMode(mode), policy, fixOptions(category, options), outError);
     }
     return YES;
 }
 
 static BOOL hook_setMode(id self, SEL _cmd, AVAudioSessionMode mode, NSError **outError) {
     if (orig_setMode) {
-        return orig_setMode(self, _cmd, cleanMode(mode), outError);
-    }
-    return YES;
-}
-
-static BOOL hook_overrideOutputAudioPort(id self, SEL _cmd, AVAudioSessionPortOverride portOverride, NSError **outError) {
-    if (portOverride == AVAudioSessionPortOverrideSpeaker) {
-        portOverride = AVAudioSessionPortOverrideNone;
-    }
-    if (orig_overrideOutputAudioPort) {
-        return orig_overrideOutputAudioPort(self, _cmd, portOverride, outError);
+        return orig_setMode(self, _cmd, fixMode(mode), outError);
     }
     return YES;
 }
@@ -113,17 +89,6 @@ static void initAudioFix(void) {
 
     Method m5 = class_getInstanceMethod(cls, @selector(setMode:error:));
     if (m5) orig_setMode = (void *)method_setImplementation(m5, (IMP)hook_setMode);
-
-    Method m6 = class_getInstanceMethod(cls, @selector(overrideOutputAudioPort:error:));
-    if (m6) orig_overrideOutputAudioPort = (void *)method_setImplementation(m6, (IMP)hook_overrideOutputAudioPort);
-
-    // Сразу при запуске приложения активируем режим Playback
-    NSError *err = nil;
-    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback
-                                     withOptions:AVAudioSessionCategoryOptionAllowAirPlay
-                                           error:&err];
-    [[AVAudioSession sharedInstance] setMode:AVAudioSessionModeDefault error:&err];
-    [[AVAudioSession sharedInstance] setActive:YES error:&err];
 
     // Уведомление
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -160,7 +125,7 @@ static void initAudioFix(void) {
         id alert = ((id (*)(id, SEL, id, id, NSInteger))objc_msgSend)(alertCls, 
             sel_registerName("alertControllerWithTitle:message:preferredStyle:"), 
             @"AudioFix G435", 
-            @"Режим Playback активирован! Bluetooth G435 разблокирован.", 
+            @"Фикс применён! Стерео A2DP активно.", 
             1);
 
         id action = ((id (*)(id, SEL, id, NSInteger, id))objc_msgSend)(actionCls, 
