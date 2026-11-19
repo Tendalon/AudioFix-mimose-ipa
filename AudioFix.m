@@ -9,13 +9,11 @@ static BOOL (*orig_setCategoryModeOptions)(id, SEL, AVAudioSessionCategory, AVAu
 static BOOL (*orig_setCategoryModeRouteSharingPolicyOptions)(id, SEL, AVAudioSessionCategory, AVAudioSessionMode, AVAudioSessionRouteSharingPolicy, AVAudioSessionCategoryOptions, NSError **);
 static BOOL (*orig_setMode)(id, SEL, AVAudioSessionMode, NSError **);
 
+// 1. Исправление аудиосессии
 static AVAudioSessionCategoryOptions fixOptions(AVAudioSessionCategory category, AVAudioSessionCategoryOptions options) {
     if ([category isEqualToString:AVAudioSessionCategoryPlayAndRecord]) {
-        // Разрешаем качественное стерео A2DP (для Logitech G435)
         options |= AVAudioSessionCategoryOptionAllowBluetoothA2DP;
-        // Отключаем телефонный режим HFP (с микрофоном), который крашил звук на G435
         options &= ~AVAudioSessionCategoryOptionAllowBluetooth;
-        // Обязательно держим динамик телефона активным при отключении наушников
         options |= AVAudioSessionCategoryOptionDefaultToSpeaker;
         options |= AVAudioSessionCategoryOptionAllowAirPlay;
     }
@@ -69,26 +67,40 @@ static BOOL hook_setMode(id self, SEL _cmd, AVAudioSessionMode mode, NSError **o
     return YES;
 }
 
+// 2. Блокировка сломанного эквалайзера: не даем привязать испорченный audioMix к треку
+static void hook_setAudioMix(id self, SEL _cmd, id audioMix) {
+    // Игнорируем установку audioMix, благодаря чему трек играет напрямую в наушники без тишины
+}
+
 __attribute__((constructor))
 static void initAudioFix(void) {
     Class cls = [AVAudioSession class];
-    if (!cls) return;
+    if (cls) {
+        Method m1 = class_getInstanceMethod(cls, @selector(setCategory:error:));
+        if (m1) orig_setCategory = (void *)method_setImplementation(m1, (IMP)hook_setCategory);
 
-    Method m1 = class_getInstanceMethod(cls, @selector(setCategory:error:));
-    if (m1) orig_setCategory = (void *)method_setImplementation(m1, (IMP)hook_setCategory);
+        Method m2 = class_getInstanceMethod(cls, @selector(setCategory:withOptions:error:));
+        if (m2) orig_setCategoryWithOptions = (void *)method_setImplementation(m2, (IMP)hook_setCategoryWithOptions);
 
-    Method m2 = class_getInstanceMethod(cls, @selector(setCategory:withOptions:error:));
-    if (m2) orig_setCategoryWithOptions = (void *)method_setImplementation(m2, (IMP)hook_setCategoryWithOptions);
+        Method m3 = class_getInstanceMethod(cls, @selector(setCategory:mode:options:error:));
+        if (m3) orig_setCategoryModeOptions = (void *)method_setImplementation(m3, (IMP)hook_setCategoryModeOptions);
 
-    Method m3 = class_getInstanceMethod(cls, @selector(setCategory:mode:options:error:));
-    if (m3) orig_setCategoryModeOptions = (void *)method_setImplementation(m3, (IMP)hook_setCategoryModeOptions);
+        SEL sel4 = @selector(setCategory:mode:routeSharingPolicy:options:error:);
+        Method m4 = class_getInstanceMethod(cls, sel4);
+        if (m4) orig_setCategoryModeRouteSharingPolicyOptions = (void *)method_setImplementation(m4, (IMP)hook_setCategoryModeRouteSharingPolicyOptions);
 
-    SEL sel4 = @selector(setCategory:mode:routeSharingPolicy:options:error:);
-    Method m4 = class_getInstanceMethod(cls, sel4);
-    if (m4) orig_setCategoryModeRouteSharingPolicyOptions = (void *)method_setImplementation(m4, (IMP)hook_setCategoryModeRouteSharingPolicyOptions);
+        Method m5 = class_getInstanceMethod(cls, @selector(setMode:error:));
+        if (m5) orig_setMode = (void *)method_setImplementation(m5, (IMP)hook_setMode);
+    }
 
-    Method m5 = class_getInstanceMethod(cls, @selector(setMode:error:));
-    if (m5) orig_setMode = (void *)method_setImplementation(m5, (IMP)hook_setMode);
+    // Отключаем audioMix на уровне AVPlayerItem (главный источник тишины в наушниках)
+    Class playerItemCls = [AVPlayerItem class];
+    if (playerItemCls) {
+        Method mMix = class_getInstanceMethod(playerItemCls, @selector(setAudioMix:));
+        if (mMix) {
+            method_setImplementation(mMix, (IMP)hook_setAudioMix);
+        }
+    }
 
     // Уведомление
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -124,8 +136,8 @@ static void initAudioFix(void) {
 
         id alert = ((id (*)(id, SEL, id, id, NSInteger))objc_msgSend)(alertCls, 
             sel_registerName("alertControllerWithTitle:message:preferredStyle:"), 
-            @"AudioFix G435", 
-            @"Фикс применён! Стерео A2DP активно.", 
+            @"AudioFix Final", 
+            @"Звук в наушниках разблокирован! Нативный плеер активен.", 
             1);
 
         id action = ((id (*)(id, SEL, id, NSInteger, id))objc_msgSend)(actionCls, 
