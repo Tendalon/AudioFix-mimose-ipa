@@ -5,7 +5,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - run: clang -arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=13.0 -Wno-deprecated-declarations -dynamiclib -install_name @rpath/AudioFix.dylib -framework Foundation -framework AVFoundation AudioFix.m -o AudioFix.dylib
+      - run: clang -arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=13.0 -Wno-deprecated-declarations -dynamiclib -install_name @rpath/AudioFix.dylib -framework Foundation -framework AVFoundation -framework UIKit AudioFix.m -o AudioFix.dylib
       - uses: actions/upload-artifact@v4
         with:
           name: AudioFix
